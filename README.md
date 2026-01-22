@@ -1,5 +1,7 @@
 # inference_for_ironman
  <br>
+
+ 둘 모두 RLMD 폴더 안에서 hls_env.py 파일과 같은 위치에서 실행하면 정상적으로 사용 가능함 <br>
 ### case_inference.py 사용법 <br>
 CASE_IDS = [2]           # 실행할 케이스 번호  
 CASE_ROOT_DIR = "../CASE" # 데이터 위치 (현재 실행 위치 기준 상대경로)     <br>
