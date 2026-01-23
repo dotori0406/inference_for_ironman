@@ -3,10 +3,14 @@ import re
 import pickle
 import json
 import sys
+import warnings
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+
+# 경고 메시지 숨기기
+warnings.filterwarnings('ignore')
 
 # [필수 라이브러리] StellarGraph
 try:
@@ -27,13 +31,13 @@ from hls_env import hls_env
 CASE_IDS = [2]            
 CASE_ROOT_DIR = "../CASE" 
 
-MODE = "lut"              # "lut", "dsp", "cp" 중 우선순위
-TARGET_VALUE = 4000       # 목표 LUT
-TARGET_CP = 10.0          # 목표 CP
+MODE = "dsp"              # "lut", "dsp", "cp" 중 우선순위
+TARGET_VALUE = 50        # 목표값
+TARGET_CP = 20.0          # CP 제한
 
 STOP_ON_SUCCESS = True    # 목표 달성 시 조기 종료
 TRIALS = 50               # 시도 횟수
-TEMPERATURE = 2.0         # 탐험 강도
+TEMPERATURE = 5.0         # 탐험 강도
 
 # [경로 설정]
 RL_MODEL_DIR = "." 
@@ -198,6 +202,7 @@ def preprocess_dfg(dfg_path):
     
     return True
 
+# [핵심 수정] 올바른 flow 호출 방식 적용
 def predict_with_gpp(gpp_models, actions, target_indices, mapping, base_nodes_df, edge_df):
     current_nodes_df = base_nodes_df.copy()
     
@@ -205,7 +210,6 @@ def predict_with_gpp(gpp_models, actions, target_indices, mapping, base_nodes_df
         if i >= len(target_indices): break
         node_idx = target_indices[i]
         node_id = mapping.get(node_idx)
-        
         if node_id in current_nodes_df.index:
             current_nodes_df.at[node_id, 'f11'] = int(action)
 
@@ -215,16 +219,25 @@ def predict_with_gpp(gpp_models, actions, target_indices, mapping, base_nodes_df
         print(f"[경고] 그래프 생성 중 에러: {e}")
         return {}
 
+    # 그래프 제너레이터 생성
     generator = PaddedGraphGenerator(graphs=[sg_graph])
-    inputs = generator.flow([sg_graph])
+    
+    # [수정됨] graph_ilocs 제거 -> graphs 리스트 직접 전달
+    gen = generator.flow(graphs=[sg_graph], batch_size=1)
 
     preds = {}
+    # print("\n[GPP 예측 디버깅]")
     for key, (embed_m, proxy_m) in gpp_models.items():
         try:
-            emb = embed_m.predict(inputs)
-            val = proxy_m.predict(emb)
-            preds[key] = float(np.abs(val[0][0]))
+            # predict에 제너레이터 전달
+            emb = embed_m.predict(gen, verbose=0)
+            val = proxy_m.predict(emb, verbose=0)
+            
+            abs_val = float(np.abs(val[0][0]))
+            # print(f"  {key.upper():>3s}: {abs_val:.2f}")
+            preds[key] = abs_val
         except Exception as e:
+            # print(f"  {key.upper()}: 예측 실패 - {e}")
             preds[key] = -1.0
             
     return preds
@@ -258,7 +271,7 @@ def generate_directives(actions, target_indices, mapping, top_func, node_info):
 
 def main():
     print("\n" + "="*70)
-    print(f"      HLS RL Optimizer [Correct Paths & GPP Input]")
+    print(f"      HLS RL Optimizer [Corrected PaddedGraphGenerator]")
     print("="*70)
     print(f"[설정] Mode: {MODE}, Target: {TARGET_VALUE}")
 
@@ -314,7 +327,6 @@ def main():
             done = False
             actions_taken = []
             
-            # [수정된 부분] env.step()의 반환값을 변수에 저장 (폴백용)
             env_lut, env_dsp, env_cp = 99999, 999, 999.0
 
             while not done:
@@ -326,18 +338,19 @@ def main():
                 probs = exp_logits / np.sum(exp_logits)
                 action = np.random.choice(len(probs), p=probs)
                 
-                # env.step에서 나오는 값을 캡처
                 state, _, done, c_lut, c_dsp, c_cp = env.step(action)
                 env_lut, env_dsp, env_cp = c_lut, c_dsp, c_cp
                 actions_taken.append(int(action))
 
-            # GPP 모델 예측
+            # GPP 예측 수행
             preds = predict_with_gpp(gpp_models, actions_taken, target_indices, mapping, df_nodes, edge_df)
             
-            # 예측값 사용, 실패하면 env 값(env_lut, env_dsp...) 사용
             lut = preds.get("lut") if preds.get("lut", -1) > 0 else env_lut
             dsp = preds.get("dsp") if preds.get("dsp", -1) > 0 else env_dsp
             cp  = preds.get("cp")  if preds.get("cp", -1) > 0 else env_cp
+
+            # 비교 로그 출력
+            # print(f" [Debug] Env: {env_dsp:.1f}, GPP: {preds.get('dsp', -1):.1f}")
 
             is_success = False
             current_score = -float('inf')
